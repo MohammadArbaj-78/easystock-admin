@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import streamlit as st
 
+import admin_users
 import stats
 
 st.set_page_config(page_title="EasyStock Admin", page_icon="📊", layout="wide")
@@ -63,10 +64,7 @@ def _load_stores() -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------- page
-def main() -> None:
-    if not _logged_in():
-        return
-
+def _usage_page() -> None:
     st.title("📊 EasyStock Admin - API usage")
 
     with st.sidebar:
@@ -144,6 +142,96 @@ def main() -> None:
     export["when"] = export["when"].dt.strftime("%Y-%m-%d %H:%M:%S")
     st.download_button("⬇️ CSV download", export.to_csv(index=False).encode("utf-8"),
                        file_name="api_usage.csv", mime="text/csv")
+
+
+# ---------------------------------------------------------------- medical stores
+@st.cache_data(ttl=60, show_spinner="Stores aa rahe hain...")
+def _load_store_list() -> list:
+    return admin_users.list_stores(_client())
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_email(uid: str) -> str:
+    return admin_users.get_email(_client(), uid)
+
+
+def _store_details(store: dict) -> None:
+    sid = store.get("store_id")
+    uid = store.get("UID")
+    try:
+        email = _load_email(uid)
+    except admin_users.AdminUserError as error:
+        st.error(str(error))
+        return
+
+    st.caption("Email id")
+    st.code(email, language=None)
+    st.caption(f"Owner: {store.get('owner_name') or '-'}   ·   Store ID: {sid}")
+
+    pw_key = f"pw_open_{sid}"
+    if st.button("🔑 Change password", key=f"pw_btn_{sid}"):
+        st.session_state[pw_key] = not st.session_state.get(pw_key, False)
+        st.rerun()
+
+    if st.session_state.get(pw_key):
+        with st.form(f"pw_form_{sid}", clear_on_submit=True):
+            new_password = st.text_input("Naya password", type="password", key=f"pw_new_{sid}")
+            confirm_password = st.text_input("Password dobara likho (confirm)", type="password", key=f"pw_conf_{sid}")
+            st.caption(f"{admin_users.PASSWORD_MIN_LENGTH}-{admin_users.PASSWORD_MAX_LENGTH} akshar. "
+                       "Set hote hi purana password login ke liye band ho jayega.")
+            submitted = st.form_submit_button("✅ Password set karo", type="primary")
+        if submitted:
+            try:
+                admin_users.set_password(_client(), uid, new_password, confirm_password)
+            except admin_users.AdminUserError as error:
+                st.error(str(error))
+            else:
+                st.session_state[pw_key] = False
+                st.session_state["pw_done"] = (
+                    f"✅ {store.get('store_name')} ka password badal gaya. Ab user ko naya password bata do."
+                )
+                st.rerun()
+
+
+def _stores_page() -> None:
+    st.title("🏪 Medical stores")
+    done = st.session_state.pop("pw_done", None)
+    if done:
+        st.success(done)
+    try:
+        stores = _load_store_list()
+    except admin_users.AdminUserError as error:
+        st.error(str(error))
+        return
+    if not stores:
+        st.info("Abhi koi medical store nahi hai.")
+        return
+
+    st.caption(f"Total {len(stores)} medical stores - kisi par click karo.")
+    open_id = st.session_state.get("open_store")
+    for store in stores:
+        sid = store.get("store_id")
+        is_open = open_id == sid
+        with st.container(border=True):
+            arrow = "▾" if is_open else "▸"
+            label = f"{arrow}  🏪 {store.get('store_name') or 'Unnamed store'}  ·  {store.get('owner_name') or ''}"
+            if st.button(label, key=f"store_btn_{sid}", use_container_width=True):
+                st.session_state["open_store"] = None if is_open else sid
+                st.rerun()
+            if is_open:
+                _store_details(store)
+
+
+# ---------------------------------------------------------------- main
+def main() -> None:
+    if not _logged_in():
+        return
+    page = st.radio("Page", ["📊 API usage", "🏪 Medical stores"], horizontal=True,
+                    key="admin_page", label_visibility="collapsed")
+    if page == "🏪 Medical stores":
+        _stores_page()
+    else:
+        _usage_page()
 
 
 main()
